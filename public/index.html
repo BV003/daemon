@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daemon</title>
+<style>
+  :root {
+    --bg: #07080c;
+    --panel: #0d0f16;
+    --line: #1c2030;
+    --text: #c9d1e4;
+    --dim: #5d6680;
+    --accent: #3ef0c4;
+    --visitor: #ff4fa3;
+    --font: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.6 var(--font);
+    display: flex;
+    justify-content: center;
+  }
+  /* 扫描线 */
+  body::after {
+    content: "";
+    position: fixed; inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(to bottom, transparent 0 2px, rgba(255,255,255,.015) 2px 3px);
+  }
+  main {
+    width: 100%; max-width: 720px; height: 100%;
+    display: flex; flex-direction: column;
+    padding: 16px;
+  }
+  header {
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 12px;
+  }
+  .title { color: var(--accent); font-size: 18px; letter-spacing: .08em; text-shadow: 0 0 8px rgba(62,240,196,.4); }
+  .sub { color: var(--dim); font-size: 13px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: 8px; box-shadow: 0 0 8px var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  #log { flex: 1; overflow-y: auto; padding: 16px 0; }
+  .msg { margin: 0 0 14px; white-space: pre-wrap; word-wrap: break-word; }
+  .who { font-size: 12px; letter-spacing: .06em; }
+  .daemon .who { color: var(--accent); }
+  .visitor .who { color: var(--visitor); }
+  .system { color: var(--dim); font-size: 13px; }
+  .cursor::after { content: "▋"; color: var(--accent); animation: pulse 1s infinite; }
+  form { display: flex; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
+  textarea {
+    flex: 1; resize: none; height: 48px;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 4px;
+    padding: 12px; font: inherit;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  button {
+    background: transparent; color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 4px;
+    padding: 0 16px; font: inherit; cursor: pointer;
+  }
+  button:disabled { opacity: .4; cursor: default; }
+  button.ghost { color: var(--dim); border-color: var(--line); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="title"><span class="dot"></span><span id="name">…</span>'s daemon</div>
+    <div class="sub">先和我的 daemon 聊聊，重要的事它会转告我。</div>
+  </header>
+  <div id="log"></div>
+  <form id="form">
+    <textarea id="input" placeholder="说点什么…  (Enter 发送，Shift+Enter 换行)" autofocus></textarea>
+    <button id="send" type="submit">发送</button>
+    <button id="end" type="button" class="ghost" title="结束对话，把摘要发给主人">结束</button>
+  </form>
+</main>
+<script>
+  const log = document.getElementById("log");
+  const form = document.getElementById("form");
+  const input = document.getElementById("input");
+  const sendBtn = document.getElementById("send");
+  const endBtn = document.getElementById("end");
+
+  // 完整对话历史，只存在这个页面里
+  const messages = [];
+  let owner = "主人";
+  let ended = false;
+
+  function add(kind, text) {
+    const div = document.createElement("div");
+    div.className = "msg " + kind;
+    if (kind === "system") {
+      div.textContent = text;
+    } else {
+      const who = document.createElement("div");
+      who.className = "who";
+      who.textContent = kind === "daemon" ? "DAEMON" : "YOU";
+      const body = document.createElement("div");
+      body.textContent = text;
+      div.append(who, body);
+    }
+    log.append(div);
+    log.scrollTop = log.scrollHeight;
+    return div;
+  }
+
+  fetch("/api/info").then(r => r.json()).then(info => {
+    owner = info.name;
+    document.getElementById("name").textContent = owner;
+    document.title = owner + "'s daemon";
+    add("daemon", `你好，我是 ${owner} 的 daemon。找 ${owner} 有什么事？我可以先帮你看看。`);
+  });
+
+  form.addEventListener("submit", async e => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text || sendBtn.disabled) return;
+    if (ended) { ended = false; messages.length = 0; log.innerHTML = ""; }
+    input.value = "";
+    add("visitor", text);
+    messages.push({ role: "user", content: text });
+
+    sendBtn.disabled = true;
+    const typing = add("system", "");
+    typing.classList.add("cursor");
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages }),
+      });
+      const data = await res.json();
+      typing.remove();
+      if (!res.ok) {
+        messages.pop();
+        add("system", data.error || "出错了");
+      } else {
+        messages.push({ role: "assistant", content: data.reply });
+        add("daemon", data.reply);
+      }
+    } catch {
+      typing.remove();
+      messages.pop();
+      add("system", "连接断了，稍后再试。");
+    }
+    sendBtn.disabled = false;
+    input.focus();
+  });
+
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  function finish() {
+    if (ended || messages.length < 2) return false;
+    ended = true;
+    navigator.sendBeacon("/api/end", new Blob([JSON.stringify({ messages })], { type: "application/json" }));
+    return true;
+  }
+
+  endBtn.addEventListener("click", () => {
+    if (finish()) add("system", `—— 对话已结束，摘要已发给 ${owner}。继续发消息会开始新的对话。——`);
+  });
+
+  // 关闭页面时也把摘要发出去
+  window.addEventListener("pagehide", finish);
+</script>
+</body>
+</html>
