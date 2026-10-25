@@ -2,18 +2,15 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import Anthropic from "@anthropic-ai/sdk";
+import { reply } from "./brain.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.PORT || 3000);
-const MODEL = process.env.DAEMON_MODEL || "claude-opus-5-5";
 const PER_IP_DAILY = Number(process.env.DAEMON_PER_IP_DAILY || 30);
 const GLOBAL_DAILY = Number(process.env.DAEMON_GLOBAL_DAILY || 500);
 const MAX_MESSAGES = 40;
 const MAX_CHARS = 2000;
-
-const client = new Anthropic();
 
 // ---------- 资料 ----------
 
@@ -64,27 +61,6 @@ function summarySystem(profile) {
 需要你处理：是 / 否
 紧急程度：高 / 中 / 低
 建议：（一句话，下一步怎么做）`;
-}
-
-// ---------- Claude ----------
-
-async function ask(system, messages) {
-  const response = await client.beta.messages.create({
-    model: MODEL,
-    max_tokens: 16000,
-    output_config: { effort: "low" },
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default",
-    cache_control: { type: "ephemeral" },
-    system,
-    messages,
-  });
-  if (response.stop_reason === "refusal") return null;
-  return response.content
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("")
-    .trim();
 }
 
 // ---------- 摘要通知 ----------
@@ -184,8 +160,8 @@ const server = http.createServer(async (req, res) => {
       if (!messages || messages.at(-1).role !== "user") {
         return send(res, 400, { error: "消息格式不对" });
       }
-      const reply = await ask(chatSystem(await loadProfile()), messages);
-      return send(res, 200, { reply: reply || "这个问题我没法回答，换个话题吧。" });
+      const answer = await reply(chatSystem(await loadProfile()), messages);
+      return send(res, 200, { reply: answer || "这个问题我没法回答，换个话题吧。" });
     }
 
     if (req.method === "POST" && req.url === "/api/end") {
@@ -195,7 +171,7 @@ const server = http.createServer(async (req, res) => {
       const transcript = messages
         .map((m) => `${m.role === "user" ? "来访者" : "daemon"}：${m.content}`)
         .join("\n\n");
-      const summary = await ask(summarySystem(await loadProfile()), [
+      const summary = await reply(summarySystem(await loadProfile()), [
         { role: "user", content: `<transcript>\n${transcript}\n</transcript>` },
       ]);
       await notify(`${summary || "（摘要生成失败）"}\n\n---- 原始对话 ----\n${transcript}`);
@@ -204,17 +180,11 @@ const server = http.createServer(async (req, res) => {
 
     send(res, 404, { error: "not found" });
   } catch (err) {
-    if (err instanceof Anthropic.RateLimitError) {
-      return send(res, 503, { error: "daemon 有点忙，稍后再试。" });
-    } else if (err instanceof Anthropic.APIError) {
-      console.error(`Claude API 错误 ${err.status}：`, err.message);
-    } else {
-      console.error(err);
-    }
+    console.error(err);
     send(res, 500, { error: "daemon 出了点问题，稍后再试。" });
   }
 });
 
 server.listen(PORT, () => {
-  console.log(`daemon 在 http://localhost:${PORT} 上线了（模型：${MODEL}）`);
+  console.log(`daemon 在 http://localhost:${PORT} 上线了`);
 });

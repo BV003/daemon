@@ -16,3 +16,5 @@ npm start                         # open http://localhost:3000
 ```
 
 Summaries print in the terminal. To get them on Telegram, set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`.
+
+Uses Claude by default. For another model, ask your coding agent: "Read AGENTS.md and rewrite brain.js to use OpenAI" (or Gemini, Ollama, …).
